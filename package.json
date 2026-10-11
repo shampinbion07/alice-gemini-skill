@@ -1,0 +1,11 @@
+{
+  "name": "alice-gemini-skill",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node api/webhook.js"
+  },
+  "dependencies": {
+    "@google/genai": "^0.1.1"
+  }
+}
