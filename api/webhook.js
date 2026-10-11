@@ -2,33 +2,20 @@ import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const app = express();
-
-// Поддержка входящих JSON-запросов от Яндекса
 app.use(express.json());
 
-// Инициализация Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-/**
- * Быстрый веб-поиск через Serper API.
- * Срабатывает только при наличии маркеров актуальности или прямого запроса.
- */
 async function fetchSerperSearch(query) {
   const apiKey = process.env.SERPER_API_KEY;
   if (!apiKey) return '';
 
-  const triggerWords = [
-    'погода', 'новости', 'курс', 'сегодня', 'счет', 'матч', 
-    'когда', 'сколько стоит', 'цена', 'кто такой', 'что такое',
-    'найди', 'поищи', 'в интернете'
-  ];
-
-  const lowerQuery = query.toLowerCase();
-  const shouldSearch = triggerWords.some(word => lowerQuery.includes(word));
+  const triggerWords = ['погода', 'новости', 'курс', 'сегодня', 'счет', 'матч', 'цена', 'кто такой', 'что такое'];
+  const shouldSearch = triggerWords.some(w => query.toLowerCase().includes(w));
   if (!shouldSearch) return '';
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2 сек максимум
+  const timeoutId = setTimeout(() => controller.abort(), 1000);
 
   try {
     const res = await fetch('https://google.serper.dev/search', {
@@ -47,29 +34,28 @@ async function fetchSerperSearch(query) {
       return data.organic.map(item => `${item.title}:${item.snippet}`).join('; ');
     }
   } catch (err) {
-    console.log('[Serper Search Skipped/Timed out]:', err.name);
+    console.log('[Serper skipped]:', err.message);
   }
   return '';
 }
 
-/**
- * Основной обработчик запросов протокола Яндекс Диалогов.
- */
-async function aliceWebhookHandler(req, res) {
+// Универсальный обработчик для Яндекс Диалогов
+async function handleAlice(req, res) {
+  console.log('[INCOMING REQUEST METHOD]:', req.method, '[URL]:', req.originalUrl);
+  console.log('[REQUEST BODY]:', JSON.stringify(req.body));
+
   const { request, session, version, state } = req.body || {};
   const command = (request?.command || request?.original_utterance || '').trim();
-
-  // Достаем историю диалога из session_state без сторонних БД
   const previousHistory = state?.session?.history || [];
 
-  // 1. Первый запуск навыка или пустое обращение
+  // Ответ на запуск сессии или пинг
   if (session?.new || !command) {
     return res.json({
       version: version || '1.0',
       session,
       response: {
-        text: 'Привет! Я голосовой помощник на базе Gemini. О чем хотите поговорить или что найти?',
-        tts: 'Привет! Я голов+ой помощник на базе Gemini. О чём хотите поговорить или что найти?',
+        text: 'Привет! Я прокачанный помощник на базе Gemini. Чем помочь?',
+        tts: 'Привет! Я прокачанный помощник на базе Gemini. Чем помочь?',
         end_session: false
       },
       session_state: {
@@ -78,67 +64,48 @@ async function aliceWebhookHandler(req, res) {
     });
   }
 
-  // 2. Обработка команд завершения сессии
-  const exitCommands = ['выход', 'стоп', 'хватит', 'пока', 'отмена'];
-  if (exitCommands.includes(command.toLowerCase())) {
+  // Команды выхода
+  if (['хватит', 'стоп', 'выход', 'пока'].includes(command.toLowerCase())) {
     return res.json({
       version: version || '1.0',
       session,
       response: {
-        text: 'Всего доброго! Будут вопросы — обращайтесь.',
+        text: 'До встречи!',
         end_session: true
       }
     });
   }
 
   try {
-    // 3. Быстрый поиск в сети при необходимости
     const webContext = await fetchSerperSearch(command);
-
-    // 4. Подготовка инструкций для генерации
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-    let systemPrompt = `Ты персональный умный голосовой ассистент для Яндекс Алисы.
-Строгие требования:
-- Отвечай кратко, понятно и по делу (максимум 2-3 коротких предложения).
-- Категорически запрещено использовать разметку Markdown (звездочки, решетки, тире для списков), спецсимволы и смайлы, так как твой ответ читается вслух синтезатором речи.
-- Отвечай в разговорном тоне, без лишней вежливости и повторения вопроса.`;
-
+    let systemPrompt = `Ты голосовой ассистент для Яндекс Алисы. Отвечай кратко, без Markdown разметки и спецсимволов. Максимум 2 предложения.`;
     if (webContext) {
-      systemPrompt += `\nАктуальная информация из поисковика:\n${webContext}`;
+      systemPrompt += ` Информация из сети: ${webContext}`;
     }
 
-    // 5. Формирование структуры сообщений с историей
     const contents = [
       { role: 'user', parts: [{ text: systemPrompt }] },
-      { role: 'model', parts: [{ text: 'Правила понял. Буду отвечать предельно кратко для озвучки голосом.' }] }
+      { role: 'model', parts: [{ text: 'Понял, отвечаю кратко голосом.' }] }
     ];
 
-    // Добавляем до 4 последних реплик (2 цикла диалога)
-    for (const item of previousHistory.slice(-4)) {
+    for (const h of previousHistory.slice(-4)) {
       contents.push({
-        role: item.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: item.text }]
+        role: h.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: h.text }]
       });
     }
 
-    // Добавляем текущую реплику
     contents.push({
       role: 'user',
       parts: [{ text: command }]
     });
 
-    // 6. Запрос к модели
-    const response = await model.generateContent({ contents });
-    let answer = response.response.text() || 'Не удалось получить ответ.';
+    const result = await model.generateContent({ contents });
+    let answer = result.response.text() || 'Готово.';
+    answer = answer.replace(/[*#_`~\[\]]/g, '').trim();
 
-    // Очистка ответа от разметки Markdown для чистой речи
-    answer = answer
-      .replace(/[*#_`~\[\]\(\)]/g, '')
-      .replace(/\n+/g, ' ')
-      .trim();
-
-    // 7. Обновление истории сессии
     const updatedHistory = [
       ...previousHistory.slice(-4),
       { role: 'user', text: command },
@@ -157,13 +124,13 @@ async function aliceWebhookHandler(req, res) {
       }
     });
 
-  } catch (error) {
-    console.error('[Service Error]:', error);
+  } catch (err) {
+    console.error('[Error processing request]:', err);
     return res.json({
       version: version || '1.0',
       session,
       response: {
-        text: 'Произошла небольшая задержка сети. Повторите, пожалуйста, ваш вопрос.',
+        text: 'Произошла небольшая задержка, повторите еще раз.',
         end_session: false
       },
       session_state: {
@@ -173,15 +140,20 @@ async function aliceWebhookHandler(req, res) {
   }
 }
 
-// Регистрация endpoints
-app.post('/api', aliceWebhookHandler);
-app.post('/', aliceWebhookHandler);
+// Принимаем POST-запросы на ЛЮБОЙ путь
+app.all('*', (req, res, next) => {
+  if (req.method === 'POST') {
+    return handleAlice(req, res);
+  }
+  next();
+});
 
-// Проверочные GET-эндпоинты (для браузера и пингов)
-app.get('/api', (req, res) => res.status(200).send('Alice API endpoint is active!'));
-app.get('/', (req, res) => res.status(200).send('Alice Service is running!'));
+// Для проверки через браузер
+app.get('*', (req, res) => {
+  res.send('Alice service is online!');
+});
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
