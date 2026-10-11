@@ -1,12 +1,17 @@
 {
   "name": "alice-gemini-skill",
   "version": "1.0.0",
+  "description": "Production webhook server for Yandex Alice skill powered by Gemini and Serper",
   "type": "module",
+  "main": "api/webhook.js",
   "scripts": {
     "start": "node api/webhook.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
     "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
