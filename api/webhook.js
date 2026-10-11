@@ -1,6 +1,10 @@
-import { GoogleGenAI } from '@google/genai';
+import express from 'express';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const app = express();
+app.use(express.json());
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function searchWeb(query) {
   if (!process.env.SERPER_API_KEY) return '';
@@ -23,17 +27,17 @@ async function searchWeb(query) {
   return '';
 }
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(200).send('Alice webhook is active');
-  }
+app.get('/', (req, res) => {
+  res.send('Alice webhook is active');
+});
 
+app.post('/', async (req, res) => {
   const { request, session, version } = req.body;
   const command = request?.command || request?.original_utterance || '';
 
-  // При первом запуске навыка
+  // Приветствие при старте навыка
   if (session?.new || !command.trim()) {
-    return res.status(200).json({
+    return res.json({
       version,
       session,
       response: {
@@ -44,38 +48,32 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Поиск актуальной инфы через Serper
     const searchContext = await searchWeb(command);
 
-    // 2. Системный промпт для Gemini
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
     const systemPrompt = `Ты умный голосовой помощник для колонки Яндекс Алиса.
-Отвечай кратко, емко, естественным языком для голоса. 
-Не используй сложные списки, markdown-разметку или спецсимволы, так как ответ будет озвучен.
+Отвечай кратко, емко, естественным разговорным языком для голоса. 
+Не используй сложные списки, markdown-разметку (**жирный**, звездочки) или спецсимволы, так как твой ответ будет озвучен голосом.
 Если предоставлен контекст из веб-поиска, используй его для ответа на актуальные вопросы.
 Контекст из интернета:
 ${searchContext}`;
 
-    // 3. Запрос к Gemini
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        { role: 'user', parts: [{ text: `${systemPrompt}\n\nВопрос пользователя: ${command}` }] }
-      ]
-    });
+    const prompt = `${systemPrompt}\n\nВопрос пользователя: ${command}`;
+    const result = await model.generateContent(prompt);
+    const replyText = result.response.text();
 
-    const replyText = response.text || 'Извините, не удалось сформировать ответ.';
-
-    return res.status(200).json({
+    return res.json({
       version,
       session,
       response: {
-        text: replyText.trim(),
+        text: replyText ? replyText.trim() : 'Извините, не удалось сформировать ответ.',
         end_session: false
       }
     });
   } catch (error) {
     console.error('Error:', error);
-    return res.status(200).json({
+    return res.json({
       version,
       session,
       response: {
@@ -84,4 +82,9 @@ ${searchContext}`;
       }
     });
   }
-}
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
